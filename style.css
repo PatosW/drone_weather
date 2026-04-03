@@ -296,6 +296,23 @@ main {
 .chip-label { opacity: .9; }
 .chip-score { font-size: 13px; font-weight: 800; }
 
+/* Prochain créneau favorable */
+.next-window-card {
+  margin-top: 14px;
+  padding: 12px 16px;
+  background: rgba(255,255,255,.1);
+  border: 1px solid rgba(255,255,255,.18);
+  border-radius: var(--radius);
+  backdrop-filter: blur(8px);
+  color: white;
+}
+.nw-title  { font-size: 12px; opacity: .75; margin-bottom: 4px; font-weight: 500; }
+.nw-main   { font-size: 15px; margin-bottom: 4px; }
+.nw-detail { font-size: 13px; opacity: .7; }
+
+/* Card visibilité neutre (nuit) */
+.cond-card.status-neutral::before { opacity: 0; }
+
 .limiting-factor {
   width: 100%;
   margin-top: 8px;

@@ -187,6 +187,19 @@ function calcTempScore(t) {
   return Math.max(0, s);
 }
 
+// Score météo pur — sans pénalité nuit ni airspace (pour le scanner de fenêtres)
+function calcMeteoScore(params, profile) {
+  profile = profile || currentDroneProfile;
+  return Math.round(
+    calcWindScore(params.wind10, params.wind80, profile) * 0.30 +
+    calcGustsScore(params.gusts, profile)                * 0.20 +
+    calcRainScore(params.precip, params.precipProb)      * 0.20 +
+    calcVisibilityScore(params.visibility)               * 0.15 +
+    calcCapeScore(params.cape)                           * 0.10 +
+    calcTempScore(params.temp)                           * 0.05
+  );
+}
+
 // ══════════════════════════════════════════════════════════
 //  SCORE DE VOL — retourne { score, breakdown, reasons }
 // ══════════════════════════════════════════════════════════
@@ -234,7 +247,7 @@ function calcFlightScore(params, droneProfile) {
       score = Math.min(score, 40);
       reasons.push({ type:'danger', text: `<strong>CTR active :</strong> ${as.airport} à ${as.dist.toFixed(1)} km — Autorisation requise` });
     } else if (as.status === 'caution') {
-      breakdown.airspace = 75;
+      breakdown.airspace = 70;
       reasons.push({ type:'warning', text: `<strong>Proximité aéroport :</strong> ${as.airport} à ${as.dist.toFixed(1)} km` });
     }
   }
@@ -442,10 +455,13 @@ function renderApp(data, locationName, lat, lon) {
   // Airspace check
   const airspace = checkAirspace(lat, lon);
 
+  // Visibilité : si nuit et données non significatives, exclure du score (valeur neutre 5km)
+  const visForScore = (!isDay && visRaw >= 9000) ? 5 : vis;
+
   // Score
   const { score, breakdown, reasons } = calcFlightScore({
     wind10, wind80, wind120, gusts, temp, precip, precipProb: precipP,
-    visibility: vis, cloudCover: cc, cape, isDaytime: isDay, airspace
+    visibility: visForScore, cloudCover: cc, cape, isDaytime: isDay, airspace
   }, currentDroneProfile);
   const verdict = getVerdict(score);
 
@@ -529,12 +545,20 @@ function renderApp(data, locationName, lat, lon) {
   setBar('precipBar', precipP, precipP > 60 ? 'var(--red)' : precipP > 30 ? 'var(--orange)' : 'var(--blue)');
   setCardStatus('card-precip', precip > 0 ? 'danger' : precipP > 50 ? 'warning' : 'good');
 
-  // ── Visibilité
-  document.getElementById('visibility').textContent = vis >= 10 ? '≥10' : vis.toFixed(1);
-  const visLabel = vis < 1 ? '⛔ Très faible' : vis < 3 ? '⚠️ Faible' : vis < 5 ? '⚠️ Modérée' : '✅ Bonne';
-  document.getElementById('visibilityLevel').textContent = visLabel;
-  setBar('visibilityBar', Math.min(100, (vis / 10) * 100), vis < 3 ? 'var(--red)' : vis < 5 ? 'var(--orange)' : 'var(--green)');
-  setCardStatus('card-visibility', vis < 3 ? 'danger' : vis < 5 ? 'warning' : 'good');
+  // ── Visibilité (neutre la nuit si données non significatives)
+  const visNight = !isDay && visRaw >= 9000;
+  if (visNight) {
+    document.getElementById('visibility').textContent = '—';
+    document.getElementById('visibilityLevel').textContent = 'Non évaluée (nuit)';
+    setBar('visibilityBar', 0, 'var(--text-third)');
+    setCardStatus('card-visibility', 'neutral');
+  } else {
+    document.getElementById('visibility').textContent = vis >= 10 ? '≥10' : vis.toFixed(1);
+    const visLabel = vis < 1 ? '⛔ Très faible' : vis < 3 ? '⚠️ Faible' : vis < 5 ? '⚠️ Modérée' : '✅ Bonne';
+    document.getElementById('visibilityLevel').textContent = visLabel;
+    setBar('visibilityBar', Math.min(100, (vis / 10) * 100), vis < 3 ? 'var(--red)' : vis < 5 ? 'var(--orange)' : 'var(--green)');
+    setCardStatus('card-visibility', vis < 3 ? 'danger' : vis < 5 ? 'warning' : 'good');
+  }
 
   // ── Nuages
   document.getElementById('cloudCover').textContent = cc;
@@ -563,6 +587,9 @@ function renderApp(data, locationName, lat, lon) {
   document.getElementById('gustsLevel').textContent = gustLabel;
   setBar('gustsBar', (gusts / 15) * 100, gusts > 12 ? 'var(--red)' : gusts > 9 ? 'var(--orange)' : 'var(--green)');
   setCardStatus('card-gusts', gusts > 12 ? 'danger' : gusts > 9 ? 'warning' : 'good');
+
+  // ── Prochain créneau favorable
+  renderNextWindow(data, nowIdx, isDay, score);
 
   // ── Breakdown chips
   renderBreakdownChips(breakdown);
@@ -596,6 +623,87 @@ function renderApp(data, locationName, lat, lon) {
   document.getElementById('weatherContent').classList.remove('hidden');
 }
 
+// ── Scanner les 18 prochaines heures pour trouver la 1ère fenêtre diurne favorable
+function findNextWindow(data, nowIdx) {
+  const h = data.hourly;
+  const d = data.daily;
+  let best = null;
+
+  for (let offset = 1; offset <= 18; offset++) {
+    const i = nowIdx + offset;
+    if (i >= h.time.length) break;
+
+    const dateStr = h.time[i].slice(0, 10);
+    const dayIdx  = d.sunrise.findIndex(s => s.startsWith(dateStr));
+    if (dayIdx < 0) continue;
+    if (!isDaytime(h.time[i], d.sunrise[dayIdx], d.sunset[dayIdx])) continue;
+
+    const ms = calcMeteoScore({
+      wind10:     h.windspeed_10m[i]              || 0,
+      wind80:     h.windspeed_80m[i]              || 0,
+      gusts:      h.windgusts_10m[i]              || 0,
+      precip:     h.precipitation[i]              || 0,
+      precipProb: h.precipitation_probability[i]  || 0,
+      visibility: (h.visibility[i] || 10000) / 1000,
+      cloudCover: h.cloudcover[i]                 || 0,
+      cape:       h.cape[i]                       || 0,
+      temp:       h.temperature_2m[i]             || 20,
+    });
+
+    if (!best || ms > best.meteoScore) {
+      best = { idx: i, time: h.time[i], meteoScore: ms,
+               wind: h.windspeed_10m[i] || 0, wcode: h.weathercode[i] || 0 };
+    }
+    if (ms >= 70) break; // première fenêtre optimale trouvée
+  }
+  return best;
+}
+
+function renderNextWindow(data, nowIdx, isDay, score) {
+  const shouldShow = !isDay || score < 45;
+
+  // Créer le conteneur une seule fois, juste avant scoreBreakdown
+  let container = document.getElementById('nextWindowBanner');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'nextWindowBanner';
+    const breakdown = document.getElementById('scoreBreakdown');
+    breakdown.parentNode.insertBefore(container, breakdown);
+  }
+
+  if (!shouldShow) { container.innerHTML = ''; return; }
+
+  const win = findNextWindow(data, nowIdx);
+  if (!win) { container.innerHTML = ''; return; }
+
+  const dt     = new Date(win.time);
+  const today  = new Date(); today.setHours(0, 0, 0, 0);
+  const target = new Date(dt); target.setHours(0, 0, 0, 0);
+  const diff   = target.getTime() - today.getTime();
+  const timeStr = dt.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  const dayLabel = diff === 0 ? "Aujourd'hui"
+    : diff === 86400000 ? 'Demain'
+    : dt.toLocaleDateString('fr-FR', { weekday: 'long' });
+
+  const wmo      = WMO_CODES[win.wcode] || WMO_CODES[0];
+  const optimal  = win.meteoScore >= 70;
+  const scoreColor = optimal ? '#34C759' : '#FF9F0A';
+  const meanNote = optimal ? '' : ' <span style="opacity:.6;font-size:11px">(conditions moyennes)</span>';
+
+  container.innerHTML = `
+    <div class="next-window-card">
+      <div class="nw-title">☀️ Prochain vol recommandé</div>
+      <div class="nw-main">
+        <strong>${dayLabel} à ${timeStr}</strong>
+        &nbsp;—&nbsp; Score météo :
+        <strong style="color:${scoreColor}">${win.meteoScore}</strong>/100${meanNote}
+      </div>
+      <div class="nw-detail">
+        ${wmo.emoji} ${wmo.label} &nbsp;·&nbsp; 💨 Vent ${win.wind.toFixed(1)} m/s
+      </div>
+    </div>`;
+}
+
 function renderBreakdownChips(breakdown) {
   const container = document.getElementById('scoreBreakdown');
   if (!container) return;
@@ -609,10 +717,15 @@ function renderBreakdownChips(breakdown) {
   ];
 
   // Chips conditionnels
-  if (breakdown.cape  < 100) chips.push({ key: 'cape',  label: '⚡ CAPE',     value: breakdown.cape });
-  if (breakdown.temp  < 100) chips.push({ key: 'temp',  label: '🌡 Temp.',    value: breakdown.temp });
-  if ('night'    in breakdown) chips.push({ key: 'night',    label: '🌙 Nuit',      value: breakdown.night });
-  if ('airspace' in breakdown) chips.push({ key: 'airspace', label: '✈️ Zone',      value: breakdown.airspace });
+  if (breakdown.cape  < 100) chips.push({ key: 'cape',  label: '⚡ CAPE',  value: breakdown.cape });
+  if (breakdown.temp  < 100) chips.push({ key: 'temp',  label: '🌡 Temp.', value: breakdown.temp });
+  if ('night'    in breakdown) chips.push({ key: 'night',    label: '🌙 Nuit', value: 0, forceClass: 'breakdown-bad' });
+  // Airspace: couleur forcée selon statut (pas via scoreClass)
+  if ('airspace' in breakdown) {
+    const av = breakdown.airspace;
+    const aClass = av === 0 ? 'breakdown-bad' : av <= 30 ? 'breakdown-bad' : 'breakdown-ok';
+    chips.push({ key: 'airspace', label: '✈️ Zone', value: av, forceClass: aClass });
+  }
 
   // Facteur limitant (sous-score le plus bas)
   const limiting = chips.reduce((a, b) => a.value <= b.value ? a : b);
@@ -628,8 +741,8 @@ function renderBreakdownChips(breakdown) {
   };
 
   const chipsHtml = chips.map(c => {
-    const cls = scoreClass(c.value);
-    return `<div class="breakdown-chip breakdown-${cls}">
+    const cls = c.forceClass || `breakdown-${scoreClass(c.value)}`;
+    return `<div class="breakdown-chip ${cls}">
       <span class="chip-label">${c.label}</span>
       <span class="chip-score">${c.value}</span>
     </div>`;
