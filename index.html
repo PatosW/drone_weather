@@ -82,6 +82,12 @@
     <!-- Contenu météo (masqué jusqu'au chargement) -->
     <div id="weatherContent" class="weather-content hidden">
 
+      <!-- ── Sélecteur de drone -->
+      <section class="drone-selector-section">
+        <div class="drone-selector-label">Drone</div>
+        <div id="droneSelector" class="drone-selector"></div>
+      </section>
+
       <!-- ── Hero : Score + Localisation -->
       <section class="hero-section">
         <div class="hero-left">
@@ -100,6 +106,9 @@
             <span id="verdictIcon">—</span>
             <span id="verdictText">Chargement…</span>
           </div>
+
+          <!-- Breakdown chips -->
+          <div id="scoreBreakdown" class="score-breakdown"></div>
         </div>
 
         <div class="hero-right">

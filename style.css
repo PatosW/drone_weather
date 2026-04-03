@@ -209,6 +209,94 @@ main {
 .btn-primary:active { transform: scale(.96); }
 
 /* ═══════════════════════════════════════════════════════════
+   DRONE SELECTOR
+   ═══════════════════════════════════════════════════════════ */
+.drone-selector-section {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.drone-selector-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-second);
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  flex-shrink: 0;
+}
+.drone-selector {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: none;
+  flex: 1;
+}
+.drone-selector::-webkit-scrollbar { display: none; }
+
+.drone-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  background: var(--card-bg);
+  border: 1.5px solid var(--separator);
+  border-radius: 50px;
+  font-family: var(--font);
+  font-size: 13px;
+  color: var(--text-second);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: border-color .2s, color .2s, background .2s, box-shadow .2s;
+}
+.drone-chip:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+.drone-chip.active {
+  background: var(--blue);
+  border-color: var(--blue);
+  color: white;
+  box-shadow: 0 2px 8px rgba(0,122,255,.3);
+}
+.drone-chip-icon { font-size: 15px; }
+.drone-chip-name { font-weight: 500; }
+.drone-chip-wind {
+  font-size: 11px;
+  opacity: .7;
+  font-weight: 400;
+}
+.drone-chip.active .drone-chip-wind { opacity: .85; }
+
+/* ═══════════════════════════════════════════════════════════
+   SCORE BREAKDOWN CHIPS
+   ═══════════════════════════════════════════════════════════ */
+.score-breakdown {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+.breakdown-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 50px;
+  font-size: 12px;
+  font-weight: 600;
+  backdrop-filter: blur(8px);
+}
+.breakdown-excellent { background: rgba(52,199,89,.22);  color: #2ECC71; }
+.breakdown-good      { background: rgba(100,200,100,.2); color: #5DB85D; }
+.breakdown-ok        { background: rgba(255,159,10,.22); color: #FF9F0A; }
+.breakdown-bad       { background: rgba(255,59,48,.22);  color: #FF6B6B; }
+
+.chip-label { opacity: .9; }
+.chip-score { font-size: 13px; font-weight: 800; }
+
+/* ═══════════════════════════════════════════════════════════
    HERO
    ═══════════════════════════════════════════════════════════ */
 .hero-section {

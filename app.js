@@ -5,6 +5,19 @@
 
 'use strict';
 
+// ══════════════════════════════════════════════════════════
+//  PROFILS DRONES DJI
+// ══════════════════════════════════════════════════════════
+const DRONE_PROFILES = [
+  { id: 'avata2',    name: 'DJI Avata 2',     maxWind: 10.8, maxGusts: 13.0, weight: 410,  icon: '🥽' },
+  { id: 'mini4pro',  name: 'DJI Mini 4 Pro',  maxWind: 10.8, maxGusts: 12.0, weight: 249,  icon: '🪶' },
+  { id: 'air3',      name: 'DJI Air 3',        maxWind: 12.0, maxGusts: 14.0, weight: 720,  icon: '✈️' },
+  { id: 'mavic3pro', name: 'DJI Mavic 3 Pro',  maxWind: 12.0, maxGusts: 14.0, weight: 958,  icon: '📷' },
+  { id: 'inspire3',  name: 'DJI Inspire 3',    maxWind: 12.0, maxGusts: 15.0, weight: 3995, icon: '🎬' },
+];
+
+let currentDroneProfile = DRONE_PROFILES[0]; // Avata 2 par défaut
+
 // ── Israël : aéroports & bases (CAAI — règle uniforme : interdit < 2 km)
 // Source : CAAI Regulation, drone-laws.com/drone-laws-in-israel (2025)
 const ISRAEL_AIRPORTS = [
@@ -113,64 +126,116 @@ function checkAirspace(lat, lon) {
 }
 
 // ══════════════════════════════════════════════════════════
-//  SCORE DE VOL
+//  SOUS-SCORES (0-100, relatifs au profil drone)
 // ══════════════════════════════════════════════════════════
-function calcFlightScore(params) {
+
+function calcWindScore(w, w80, profile) {
+  let s = 100;
+  const max = profile.maxWind;
+  if (w >= max * 1.15)      s -= 60;
+  else if (w >= max)        s -= 40;
+  else if (w >= max * 0.75) s -= 20;
+  else if (w >= max * 0.5)  s -= 8;
+  if (w80 >= max * 1.1)     s -= 15;
+  else if (w80 >= max * 0.85) s -= 8;
+  const shear = Math.abs(w80 - w);
+  if (shear > 5) s -= 10;
+  return Math.max(0, s);
+}
+
+function calcGustsScore(g, profile) {
+  let s = 100;
+  const max = profile.maxGusts;
+  if (g >= max * 1.1)      s -= 55;
+  else if (g >= max)       s -= 38;
+  else if (g >= max * 0.8) s -= 18;
+  else if (g >= max * 0.6) s -= 6;
+  return Math.max(0, s);
+}
+
+function calcRainScore(precip, precipProb) {
+  let s = 100;
+  if (precip > 2)           s -= 80;
+  else if (precip > 0)      s -= 50;
+  else if (precipProb >= 60) s -= 30;
+  else if (precipProb >= 30) s -= 12;
+  return Math.max(0, s);
+}
+
+function calcVisibilityScore(vis) {
+  let s = 100;
+  if (vis < 1)      s -= 70;
+  else if (vis < 3) s -= 40;
+  else if (vis < 5) s -= 15;
+  return Math.max(0, s);
+}
+
+// ══════════════════════════════════════════════════════════
+//  SCORE DE VOL — retourne { score, breakdown, reasons }
+// ══════════════════════════════════════════════════════════
+function calcFlightScore(params, droneProfile) {
+  const profile = droneProfile || currentDroneProfile;
   let score = 100;
   const reasons = [];
 
-  // Vent au sol (10m) — Avata 2 : max 10.8 m/s
+  // ── Breakdown (4 sous-scores indépendants)
+  const breakdown = {
+    wind:       calcWindScore(params.wind10, params.wind80, profile),
+    gusts:      calcGustsScore(params.gusts, profile),
+    rain:       calcRainScore(params.precip, params.precipProb),
+    visibility: calcVisibilityScore(params.visibility),
+  };
+
+  // ── Vent (score global influencé par le profil)
   const w = params.wind10;
-  if (w >= 12)      { score -= 40; reasons.push({ type:'danger',  text: `<strong>Vent dangereux au sol :</strong> ${w.toFixed(1)} m/s — Au-delà des limites de l'Avata 2 (10.8 m/s)` }); }
-  else if (w >= 10.8){ score -= 30; reasons.push({ type:'danger',  text: `<strong>Vent critique au sol :</strong> ${w.toFixed(1)} m/s — Limite maximale Avata 2` }); }
-  else if (w >= 8)  { score -= 18; reasons.push({ type:'warning', text: `<strong>Vent fort au sol :</strong> ${w.toFixed(1)} m/s — Vol difficile, haute vigilance` }); }
-  else if (w >= 5)  { score -= 8;  reasons.push({ type:'warning', text: `<strong>Vent modéré au sol :</strong> ${w.toFixed(1)} m/s — Vol possible avec précaution` }); }
-  else              {               reasons.push({ type:'ok',      text: `<strong>Vent au sol acceptable :</strong> ${w.toFixed(1)} m/s` }); }
+  const max = profile.maxWind;
+  if (w >= max * 1.15)      { score -= 40; reasons.push({ type:'danger',  text: `<strong>Vent dangereux au sol :</strong> ${w.toFixed(1)} m/s — Au-delà des limites du ${profile.name} (${max} m/s)` }); }
+  else if (w >= max)        { score -= 30; reasons.push({ type:'danger',  text: `<strong>Vent critique au sol :</strong> ${w.toFixed(1)} m/s — Limite maximale ${profile.name}` }); }
+  else if (w >= max * 0.75) { score -= 18; reasons.push({ type:'warning', text: `<strong>Vent fort au sol :</strong> ${w.toFixed(1)} m/s — Vol difficile, haute vigilance` }); }
+  else if (w >= max * 0.5)  { score -= 8;  reasons.push({ type:'warning', text: `<strong>Vent modéré au sol :</strong> ${w.toFixed(1)} m/s — Vol possible avec précaution` }); }
+  else                      {               reasons.push({ type:'ok',      text: `<strong>Vent au sol acceptable :</strong> ${w.toFixed(1)} m/s` }); }
 
-  // Rafales
-  const g = params.gusts;
-  if (g > 0) {
-    if (g >= 12)    { score -= 20; reasons.push({ type:'danger',  text: `<strong>Rafales extrêmes :</strong> ${g.toFixed(1)} m/s — Vol interdit` }); }
-    else if (g >= 9){ score -= 12; reasons.push({ type:'warning', text: `<strong>Rafales fortes :</strong> ${g.toFixed(1)} m/s — Risque de déstabilisation` }); }
-  }
-
-  // Vent à 80m
+  // Vent à 80m + cisaillement
   const w80 = params.wind80;
-  if (w80 >= 12)    { score -= 15; reasons.push({ type:'danger',  text: `<strong>Vent à 80m dangereux :</strong> ${w80.toFixed(1)} m/s` }); }
-  else if (w80 >= 9){ score -= 8;  reasons.push({ type:'warning', text: `<strong>Vent à 80m élevé :</strong> ${w80.toFixed(1)} m/s — Limiter l'altitude` }); }
-
-  // Cisaillement (différence sol/altitude)
+  if (w80 >= max * 1.1)       { score -= 15; reasons.push({ type:'danger',  text: `<strong>Vent à 80m dangereux :</strong> ${w80.toFixed(1)} m/s` }); }
+  else if (w80 >= max * 0.85) { score -= 8;  reasons.push({ type:'warning', text: `<strong>Vent à 80m élevé :</strong> ${w80.toFixed(1)} m/s — Limiter l'altitude` }); }
   const shear = Math.abs(w80 - w);
-  if (shear > 5)    { score -= 10; reasons.push({ type:'warning', text: `<strong>Cisaillement de vent :</strong> ${shear.toFixed(1)} m/s entre sol et 80m — Turbulences possibles` }); }
+  if (shear > 5) { score -= 10; reasons.push({ type:'warning', text: `<strong>Cisaillement de vent :</strong> ${shear.toFixed(1)} m/s entre sol et 80m — Turbulences possibles` }); }
 
-  // Précipitations
+  // ── Rafales
+  const g = params.gusts;
+  const maxG = profile.maxGusts;
+  if (g >= maxG * 1.1)      { score -= 20; reasons.push({ type:'danger',  text: `<strong>Rafales extrêmes :</strong> ${g.toFixed(1)} m/s — Vol interdit` }); }
+  else if (g >= maxG)       { score -= 14; reasons.push({ type:'danger',  text: `<strong>Rafales à la limite :</strong> ${g.toFixed(1)} m/s — Limite max ${profile.name}` }); }
+  else if (g >= maxG * 0.8) { score -= 8;  reasons.push({ type:'warning', text: `<strong>Rafales fortes :</strong> ${g.toFixed(1)} m/s — Risque de déstabilisation` }); }
+
+  // ── Précipitations
   const p = params.precip;
   const pp = params.precipProb;
-  if (p > 2)        { score -= 40; reasons.push({ type:'danger',  text: `<strong>Précipitations actives :</strong> ${p.toFixed(1)} mm — Vol interdit` }); }
-  else if (p > 0)   { score -= 25; reasons.push({ type:'danger',  text: `<strong>Précipitations faibles :</strong> ${p.toFixed(1)} mm — Vol fortement déconseillé` }); }
-  else if (pp >= 60){ score -= 15; reasons.push({ type:'warning', text: `<strong>Probabilité de pluie élevée :</strong> ${pp}% — Risque significatif` }); }
-  else if (pp >= 30){ score -= 6;  reasons.push({ type:'warning', text: `<strong>Probabilité de pluie :</strong> ${pp}% — Rester vigilant` }); }
-  else              {               reasons.push({ type:'ok',      text: `<strong>Pas de précipitations</strong> prévues` }); }
+  if (p > 2)          { score -= 40; reasons.push({ type:'danger',  text: `<strong>Précipitations actives :</strong> ${p.toFixed(1)} mm — Vol interdit` }); }
+  else if (p > 0)     { score -= 25; reasons.push({ type:'danger',  text: `<strong>Précipitations faibles :</strong> ${p.toFixed(1)} mm — Vol fortement déconseillé` }); }
+  else if (pp >= 60)  { score -= 15; reasons.push({ type:'warning', text: `<strong>Probabilité de pluie élevée :</strong> ${pp}% — Risque significatif` }); }
+  else if (pp >= 30)  { score -= 6;  reasons.push({ type:'warning', text: `<strong>Probabilité de pluie :</strong> ${pp}% — Rester vigilant` }); }
+  else                {               reasons.push({ type:'ok',      text: `<strong>Pas de précipitations</strong> prévues` }); }
 
-  // Visibilité
-  const vis = params.visibility; // km
-  if (vis < 1)      { score -= 35; reasons.push({ type:'danger',  text: `<strong>Visibilité très faible :</strong> ${vis.toFixed(1)} km — Vol en VLOS impossible` }); }
+  // ── Visibilité
+  const vis = params.visibility;
+  if (vis < 1)      { score -= 35; reasons.push({ type:'danger',  text: `<strong>Visibilité très faible :</strong> ${vis.toFixed(1)} km — Vol VLOS impossible` }); }
   else if (vis < 3) { score -= 20; reasons.push({ type:'danger',  text: `<strong>Visibilité réduite :</strong> ${vis.toFixed(1)} km — Conditions VLOS dégradées` }); }
   else if (vis < 5) { score -= 8;  reasons.push({ type:'warning', text: `<strong>Visibilité limitée :</strong> ${vis.toFixed(1)} km — Vigilance recommandée` }); }
   else              {               reasons.push({ type:'ok',      text: `<strong>Bonne visibilité :</strong> ${vis.toFixed(1)} km` }); }
 
-  // Couverture nuageuse
-  const cc = params.cloudCover;
-  if (cc >= 90)     { score -= 5;  reasons.push({ type:'warning', text: `<strong>Couverture nuageuse totale :</strong> ${cc}%` }); }
+  // ── Nuages
+  if (params.cloudCover >= 90) { score -= 5; reasons.push({ type:'warning', text: `<strong>Couverture nuageuse totale :</strong> ${params.cloudCover}%` }); }
 
-  // CAPE (orages)
+  // ── CAPE
   const cape = params.cape;
-  if (cape > 1500)  { score -= 35; reasons.push({ type:'danger',  text: `<strong>Risque orage extrême (CAPE : ${Math.round(cape)} J/kg)</strong> — Vol dangereux` }); }
-  else if (cape > 800){ score -= 20; reasons.push({ type:'danger', text: `<strong>Risque orage élevé (CAPE : ${Math.round(cape)} J/kg)</strong> — Vol fortement déconseillé` }); }
-  else if (cape > 300){ score -= 10; reasons.push({ type:'warning',text: `<strong>Instabilité atmosphérique (CAPE : ${Math.round(cape)} J/kg)</strong> — Orages possibles` }); }
-  else              {               reasons.push({ type:'ok',      text: `<strong>Atmosphère stable</strong> — Aucun risque d'orage` }); }
+  if (cape > 1500)    { score -= 35; reasons.push({ type:'danger',  text: `<strong>Risque orage extrême (CAPE : ${Math.round(cape)} J/kg)</strong> — Vol dangereux` }); }
+  else if (cape > 800){ score -= 20; reasons.push({ type:'danger',  text: `<strong>Risque orage élevé (CAPE : ${Math.round(cape)} J/kg)</strong> — Vol fortement déconseillé` }); }
+  else if (cape > 300){ score -= 10; reasons.push({ type:'warning', text: `<strong>Instabilité atmosphérique (CAPE : ${Math.round(cape)} J/kg)</strong> — Orages possibles` }); }
+  else                {               reasons.push({ type:'ok',      text: `<strong>Atmosphère stable</strong> — Aucun risque d'orage` }); }
 
-  // Température (batterie Avata 2 : -10°C à 40°C, optimal > 10°C)
+  // ── Température
   const t = params.temp;
   if (t < -5)       { score -= 20; reasons.push({ type:'danger',  text: `<strong>Température hors limites :</strong> ${t.toFixed(1)}°C — Batterie défaillante possible` }); }
   else if (t < 5)   { score -= 10; reasons.push({ type:'warning', text: `<strong>Température froide :</strong> ${t.toFixed(1)}°C — Capacité batterie réduite (~30%)` }); }
@@ -178,17 +243,18 @@ function calcFlightScore(params) {
   else if (t > 38)  { score -= 8;  reasons.push({ type:'warning', text: `<strong>Température élevée :</strong> ${t.toFixed(1)}°C — Risque de surchauffe` }); }
   else              {               reasons.push({ type:'ok',      text: `<strong>Température optimale :</strong> ${t.toFixed(1)}°C` }); }
 
-  // Nuit
+  // ── Nuit
   if (!params.isDaytime) {
     score -= 50;
     reasons.push({ type:'danger', text: `<strong>Vol de nuit :</strong> Interdit par la CAAI sans autorisation spéciale` });
   }
 
-  // UTM obligatoire (CAAI, règlement 10916 — novembre 2023)
-  // Tout drone >250g doit être connecté à un système UTM actif
-  reasons.push({ type:'info', text: `<strong>UTM obligatoire (CAAI nov. 2023) :</strong> L'Avata 2 doit être connecté à un système UTM actif avant chaque vol. Sans connexion UTM, le vol est illégal en Israël.` });
+  // ── UTM obligatoire (CAAI, règlement 10916 — nov. 2023)
+  if (profile.weight > 250) {
+    reasons.push({ type:'info', text: `<strong>UTM obligatoire (CAAI nov. 2023) :</strong> Le ${profile.name} (${profile.weight}g) doit être connecté à un système UTM actif. Sans connexion UTM, le vol est illégal en Israël.` });
+  }
 
-  // Airspace
+  // ── Airspace
   if (params.airspace) {
     const as = params.airspace;
     if (as.status === 'danger')  { score -= 50; reasons.push({ type:'danger',  text: `<strong>Zone interdite :</strong> ${as.airport} à ${as.dist.toFixed(1)} km — Autorisation CAAI obligatoire` }); }
@@ -196,8 +262,7 @@ function calcFlightScore(params) {
     if (as.status === 'caution') { score -= 5;  reasons.push({ type:'warning', text: `<strong>Proximité aéroport :</strong> ${as.airport} à ${as.dist.toFixed(1)} km` }); }
   }
 
-  score = Math.max(0, Math.min(100, score));
-  return { score: Math.round(score), reasons };
+  return { score: Math.round(Math.max(0, Math.min(100, score))), breakdown, reasons };
 }
 
 // ── Verdict
@@ -355,10 +420,10 @@ function renderApp(data, locationName, lat, lon) {
   const airspace = checkAirspace(lat, lon);
 
   // Score
-  const { score, reasons } = calcFlightScore({
+  const { score, breakdown, reasons } = calcFlightScore({
     wind10, wind80, wind120, gusts, temp, precip, precipProb: precipP,
     visibility: vis, cloudCover: cc, cape, isDaytime: isDay, airspace
-  });
+  }, currentDroneProfile);
   const verdict = getVerdict(score);
 
   // ── Localisation & heure
@@ -476,8 +541,11 @@ function renderApp(data, locationName, lat, lon) {
   setBar('gustsBar', (gusts / 15) * 100, gusts > 12 ? 'var(--red)' : gusts > 9 ? 'var(--orange)' : 'var(--green)');
   setCardStatus('card-gusts', gusts > 12 ? 'danger' : gusts > 9 ? 'warning' : 'good');
 
+  // ── Breakdown chips
+  renderBreakdownChips(breakdown);
+
   // ── Profil altitude
-  renderAltitudeProfile({ wind10, wind80, wind120, wind180 });
+  renderAltitudeProfile({ wind10, wind80, wind120, wind180 }, currentDroneProfile);
 
   // ── Réglementations
   const asEl = document.getElementById('regAirport');
@@ -505,20 +573,40 @@ function renderApp(data, locationName, lat, lon) {
   document.getElementById('weatherContent').classList.remove('hidden');
 }
 
-function renderAltitudeProfile({ wind10, wind80, wind120, wind180 }) {
+function renderBreakdownChips(breakdown) {
+  const container = document.getElementById('scoreBreakdown');
+  if (!container) return;
+  const chips = [
+    { key: 'wind',       label: '💨 Vent',        value: breakdown.wind },
+    { key: 'gusts',      label: '💥 Rafales',      value: breakdown.gusts },
+    { key: 'rain',       label: '🌧 Pluie',        value: breakdown.rain },
+    { key: 'visibility', label: '👁 Visibilité',   value: breakdown.visibility },
+  ];
+  container.innerHTML = chips.map(c => {
+    const cls = scoreClass(c.value);
+    return `<div class="breakdown-chip breakdown-${cls}">
+      <span class="chip-label">${c.label}</span>
+      <span class="chip-score">${c.value}</span>
+    </div>`;
+  }).join('');
+}
+
+function renderAltitudeProfile({ wind10, wind80, wind120, wind180 }, profile) {
+  profile = profile || currentDroneProfile;
+  const max = profile.maxWind;
   const container = document.getElementById('altitudeProfile');
   const levels = [
-    { label: '10 m',  val: wind10,  limit: 10.8 },
-    { label: '80 m',  val: wind80,  limit: 10.8 },
-    { label: '120 m', val: wind120, limit: 10.8 },
-    { label: '180 m', val: wind180, limit: 10.8 },
+    { label: '10 m',  val: wind10  },
+    { label: '80 m',  val: wind80  },
+    { label: '120 m', val: wind120 },
+    { label: '180 m', val: wind180 },
   ];
 
   container.innerHTML = levels.map(lv => {
-    const pct = Math.min(100, (lv.val / 16) * 100);
-    const color = lv.val > 10.8 ? 'var(--red)' : lv.val > 8 ? 'var(--orange)' : 'var(--green)';
-    const stClass = lv.val > 10.8 ? 'danger' : lv.val > 8 ? 'caution' : 'ok';
-    const stLabel = lv.val > 10.8 ? '⛔ Limite' : lv.val > 8 ? '⚠️ Prudence' : '✅ OK';
+    const pct   = Math.min(100, (lv.val / (max * 1.5)) * 100);
+    const color = lv.val > max ? 'var(--red)' : lv.val > max * 0.75 ? 'var(--orange)' : 'var(--green)';
+    const stCls = lv.val > max ? 'danger' : lv.val > max * 0.75 ? 'caution' : 'ok';
+    const stLbl = lv.val > max ? '⛔ Limite' : lv.val > max * 0.75 ? '⚠️ Prudence' : '✅ OK';
     return `
       <div class="alt-row">
         <div class="alt-label">${lv.label}</div>
@@ -526,14 +614,14 @@ function renderAltitudeProfile({ wind10, wind80, wind120, wind180 }) {
           <div class="alt-bar-fill" style="width:${pct}%; background:${color}"></div>
         </div>
         <div class="alt-value">${lv.val.toFixed(1)} m/s</div>
-        <div class="alt-status ${stClass}">${stLabel}</div>
+        <div class="alt-status ${stCls}">${stLbl}</div>
       </div>`;
   }).join('');
 
   container.innerHTML += `
     <div class="avata-limit">
       <svg viewBox="0 0 20 20" fill="none" width="16"><path d="M10 2L2 18h16L10 2z" stroke="var(--blue)" stroke-width="1.5"/><text x="10" y="14" text-anchor="middle" font-size="9" fill="var(--blue)" font-weight="bold">i</text></svg>
-      DJI Avata 2 — Résistance max : <strong>10.8 m/s</strong> &nbsp;|&nbsp; Altitude légale CAAI : <strong>50 m AGL</strong>
+      ${profile.name} — Vent max : <strong>${max} m/s</strong> &nbsp;|&nbsp; Rafales max : <strong>${profile.maxGusts} m/s</strong> &nbsp;|&nbsp; CAAI : <strong>50 m AGL</strong>
     </div>`;
 }
 
@@ -589,13 +677,14 @@ function renderForecast(data, tab) {
           cape:       h.cape[i]          || 0,
           isDaytime:  isDay,
           airspace:   null
-        });
+        }, currentDroneProfile);
         cellScore = score;
         mainVal = `<div class="fc-score ${scoreClass(score)}">${score}</div>`;
         sub = '';
       } else if (tab === 'wind') {
         const w = (h.windspeed_10m[i] || 0).toFixed(1);
-        const wColor = h.windspeed_10m[i] > 10.8 ? 'var(--red)' : h.windspeed_10m[i] > 7 ? 'var(--orange)' : 'var(--green)';
+        const wv = h.windspeed_10m[i] || 0;
+        const wColor = wv > currentDroneProfile.maxWind ? 'var(--red)' : wv > currentDroneProfile.maxWind * 0.75 ? 'var(--orange)' : 'var(--green)';
         mainVal = `<div class="fc-wind" style="font-size:13px;font-weight:700;color:${wColor}">${w}</div><div class="fc-wind">m/s</div>`;
         cellScore = 100 - Math.min(100, (h.windspeed_10m[i] / 15) * 100);
       } else {
@@ -771,9 +860,38 @@ setInterval(() => {
 }, 600000);
 
 // ══════════════════════════════════════════════════════════
+//  SÉLECTEUR DE DRONE
+// ══════════════════════════════════════════════════════════
+function renderDroneSelector() {
+  const container = document.getElementById('droneSelector');
+  if (!container) return;
+  container.innerHTML = DRONE_PROFILES.map(p => `
+    <button class="drone-chip ${p.id === currentDroneProfile.id ? 'active' : ''}"
+            data-drone-id="${p.id}">
+      <span class="drone-chip-icon">${p.icon}</span>
+      <span class="drone-chip-name">${p.name}</span>
+      <span class="drone-chip-wind">${p.maxWind} m/s</span>
+    </button>`).join('');
+}
+
+document.addEventListener('click', (e) => {
+  const chip = e.target.closest('.drone-chip');
+  if (!chip) return;
+  const profile = DRONE_PROFILES.find(p => p.id === chip.dataset.droneId);
+  if (!profile || profile.id === currentDroneProfile.id) return;
+  currentDroneProfile = profile;
+  renderDroneSelector();
+  // Re-calculer sans rappel API (données déjà chargées)
+  if (currentWeatherData) {
+    renderApp(currentWeatherData, document.getElementById('locationName').textContent, currentLat, currentLon);
+  }
+});
+
+// ══════════════════════════════════════════════════════════
 //  INIT
 // ══════════════════════════════════════════════════════════
 (function init() {
+  renderDroneSelector();
   // Charger la dernière position sauvegardée
   const last = localStorage.getItem('dw_last');
   if (last) {
