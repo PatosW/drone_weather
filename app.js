@@ -5,14 +5,17 @@
 
 'use strict';
 
-// ── Israël : aéroports principaux (CAAI)
+// ── Israël : aéroports & bases (CAAI — règle uniforme : interdit < 2 km)
+// Source : CAAI Regulation, drone-laws.com/drone-laws-in-israel (2025)
 const ISRAEL_AIRPORTS = [
-  { name: 'Ben Gurion (TLV)', lat: 32.0004, lon: 34.8706, ctr_km: 8,  danger_km: 3  },
-  { name: 'Haïfa (HFA)',      lat: 32.8094, lon: 35.0431, ctr_km: 5,  danger_km: 2  },
-  { name: 'Eilat Ramon (ETM)',lat: 29.7269, lon: 35.0060, ctr_km: 5,  danger_km: 2  },
-  { name: 'Ovda (VDA)',       lat: 29.9403, lon: 34.9358, ctr_km: 5,  danger_km: 2  },
-  { name: 'Tel Nof (Air Base)',lat:31.8394, lon: 34.8228, ctr_km: 6,  danger_km: 3  },
-  { name: 'Ramat David (Air Base)', lat: 32.6650, lon: 35.1795, ctr_km: 5, danger_km: 2 },
+  { name: 'Ben Gurion (TLV)',        lat: 32.0004, lon: 34.8706 },
+  { name: 'Haïfa (HFA)',             lat: 32.8094, lon: 35.0431 },
+  { name: 'Eilat Ramon (ETM)',       lat: 29.7269, lon: 35.0060 },
+  { name: 'Ovda (VDA)',              lat: 29.9403, lon: 34.9358 },
+  { name: 'Tel Nof (base militaire)',lat: 31.8394, lon: 34.8228 },
+  { name: 'Ramat David (base militaire)', lat: 32.6650, lon: 35.1795 },
+  { name: 'Herzliya (IDC)',          lat: 32.1800, lon: 34.8340 },
+  { name: 'Beer Sheva (Teyman)',     lat: 31.2870, lon: 34.7228 },
 ];
 
 // ── Codes météo Open-Meteo → emoji + description
@@ -72,36 +75,37 @@ function geoDistKm(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
-// ── Vérification zones aéroportuaires
+// ── Vérification zones aéroportuaires (CAAI 2025)
+// Règle officielle : interdiction dans les 2 km de tout aérodrome
 function checkAirspace(lat, lon) {
   let minDist = Infinity, nearest = null;
   for (const ap of ISRAEL_AIRPORTS) {
     const d = geoDistKm(lat, lon, ap.lat, ap.lon);
     if (d < minDist) { minDist = d; nearest = ap; }
   }
-  if (!nearest) return { status: 'clear', text: 'Hors zones restreintes', note: '' };
+  if (!nearest) return { status: 'clear', text: 'Hors zones restreintes', note: 'Espace aérien libre' };
 
-  if (minDist < nearest.danger_km) {
+  if (minDist < 2) {
     return {
       status: 'danger',
-      text: `${nearest.name} — ${minDist.toFixed(1)} km`,
-      note: `⛔ Zone de danger — Vol interdit sans autorisation CAAI`,
+      text: `${nearest.name} — ${minDist.toFixed(2)} km`,
+      note: `⛔ Zone interdite CAAI — Moins de 2 km de l'aérodrome`,
       airport: nearest.name, dist: minDist
     };
   }
-  if (minDist < nearest.ctr_km) {
+  if (minDist < 5) {
     return {
       status: 'warning',
       text: `${nearest.name} — ${minDist.toFixed(1)} km`,
-      note: `⚠️ CTR — Autorisation CAAI obligatoire avant tout vol`,
+      note: `⚠️ Proximité CTR — Contacter la tour de contrôle avant tout vol`,
       airport: nearest.name, dist: minDist
     };
   }
-  if (minDist < 15) {
+  if (minDist < 10) {
     return {
       status: 'caution',
       text: `${nearest.name} — ${minDist.toFixed(1)} km`,
-      note: `ℹ️ Proximité aéroport — Vigilance recommandée`,
+      note: `ℹ️ Zone de vigilance — Surveiller le trafic aérien`,
       airport: nearest.name, dist: minDist
     };
   }
@@ -180,6 +184,10 @@ function calcFlightScore(params) {
     reasons.push({ type:'danger', text: `<strong>Vol de nuit :</strong> Interdit par la CAAI sans autorisation spéciale` });
   }
 
+  // UTM obligatoire (CAAI, règlement 10916 — novembre 2023)
+  // Tout drone >250g doit être connecté à un système UTM actif
+  reasons.push({ type:'info', text: `<strong>UTM obligatoire (CAAI nov. 2023) :</strong> L'Avata 2 doit être connecté à un système UTM actif avant chaque vol. Sans connexion UTM, le vol est illégal en Israël.` });
+
   // Airspace
   if (params.airspace) {
     const as = params.airspace;
@@ -227,7 +235,8 @@ async function geocode(query) {
   return resp.json();
 }
 
-// Météo : Open-Meteo
+// Météo : Open-Meteo — modèle ICON (DWD, Allemagne) plus précis pour Israël/Méditerranée
+// ICON couvre Israël à ~6.5 km de résolution vs GFS à 25 km
 async function fetchWeather(lat, lon) {
   const url = [
     'https://api.open-meteo.com/v1/forecast',
@@ -238,9 +247,11 @@ async function fetchWeather(lat, lon) {
     'surface_pressure',
     '&daily=sunrise,sunset,precipitation_sum',
     '&current_weather=true',
+    '&current_weather_units=unitsystem',
     '&timezone=auto',
     '&forecast_days=3',
-    '&windspeed_unit=ms'
+    '&windspeed_unit=ms',
+    '&models=icon_seamless'   // ICON : meilleur modèle pour la région Méditerranée/Moyen-Orient
   ].join('');
   const resp = await fetch(url);
   if (!resp.ok) throw new Error('Erreur API météo');
@@ -357,6 +368,13 @@ function renderApp(data, locationName, lat, lon) {
   });
   const wmo = WMO_CODES[wcode] || WMO_CODES[0];
   document.getElementById('weatherDescription').textContent = `${wmo.emoji} ${wmo.label}`;
+
+  // ── Source & horodatage
+  const dataSourceEl = document.getElementById('dataSource');
+  if (dataSourceEl) {
+    const updatedAt = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    dataSourceEl.innerHTML = `Données : <strong>Open-Meteo ICON</strong> · Mis à jour à ${updatedAt} · <a href="https://open-meteo.com" target="_blank" style="color:rgba(255,255,255,.6)">open-meteo.com</a>`;
+  }
 
   // ── Verdict badge
   const badge = document.getElementById('verdictBadge');
