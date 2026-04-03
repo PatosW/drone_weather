@@ -209,6 +209,20 @@ main {
 .btn-primary:active { transform: scale(.96); }
 
 /* ═══════════════════════════════════════════════════════════
+   CARTE LEAFLET
+   ═══════════════════════════════════════════════════════════ */
+#droneMap {
+  width: 100%;
+  height: 220px;
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin: 12px 0;
+}
+@media (min-width: 768px) {
+  #droneMap { height: 300px; }
+}
+
+/* ═══════════════════════════════════════════════════════════
    DRONE SELECTOR
    ═══════════════════════════════════════════════════════════ */
 .drone-selector-section {

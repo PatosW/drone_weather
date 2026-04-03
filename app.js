@@ -370,6 +370,69 @@ async function reverseGeocode(lat, lon) {
 }
 
 // ══════════════════════════════════════════════════════════
+//  CARTE LEAFLET
+// ══════════════════════════════════════════════════════════
+
+let map = null;
+let mapMarker = null;
+let mapSafetyCircle = null;
+
+function initMap() {
+  map = L.map('droneMap', {
+    zoomControl: false,
+    attributionControl: true
+  }).setView([31.5, 35.0], 7);
+
+  L.tileLayer('https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}{r}.png', {
+    attribution: '© Stadia Maps © OpenMapTiles © OpenStreetMap',
+    maxZoom: 18
+  }).addTo(map);
+
+  // Zones aéroportuaires depuis ISRAEL_AIRPORTS
+  for (const ap of ISRAEL_AIRPORTS) {
+    L.circle([ap.lat, ap.lon], {
+      radius: 2000,
+      color: '#FF3B30', fillColor: '#FF3B30', fillOpacity: 0.15, weight: 1.5
+    }).addTo(map).bindTooltip(`⛔ ${ap.name} — Zone interdite 2 km`, { permanent: false, direction: 'top' });
+
+    L.circle([ap.lat, ap.lon], {
+      radius: 5000,
+      color: '#FF9500', fillColor: '#FF9500', fillOpacity: 0.07, weight: 1, dashArray: '4 4'
+    }).addTo(map).bindTooltip(`⚠️ ${ap.name} — CTR 5 km`, { permanent: false, direction: 'top' });
+  }
+
+  // Clic sur la carte → charger météo pour ce point
+  map.on('click', async (e) => {
+    await loadWeatherForLocation(e.latlng.lat, e.latlng.lng, null);
+  });
+}
+
+function updateMap(lat, lon) {
+  if (!map) return;
+
+  const droneIcon = L.divIcon({
+    html: '<div style="background:#0A84FF;border-radius:50%;width:36px;height:36px;display:flex;align-items:center;justify-content:center;font-size:18px;border:3px solid white;box-shadow:0 2px 8px rgba(0,0,0,.4)">🚁</div>',
+    iconSize: [36, 36],
+    iconAnchor: [18, 18],
+    className: ''
+  });
+
+  if (mapMarker)       map.removeLayer(mapMarker);
+  if (mapSafetyCircle) map.removeLayer(mapSafetyCircle);
+
+  mapMarker = L.marker([lat, lon], { icon: droneIcon })
+    .addTo(map)
+    .bindPopup('📍 Position sélectionnée');
+
+  mapSafetyCircle = L.circle([lat, lon], {
+    radius: 250,
+    color: '#30D158', fillColor: '#30D158', fillOpacity: 0.15, weight: 2
+  }).addTo(map).bindTooltip('Zone 250 m — Règle CAAI bâtiments/personnes');
+
+  map.flyTo([lat, lon], 13, { duration: 1.2 });
+}
+
+// ══════════════════════════════════════════════════════════
 //  RENDERING
 // ══════════════════════════════════════════════════════════
 
@@ -621,6 +684,9 @@ function renderApp(data, locationName, lat, lon) {
   // ── Afficher le contenu
   document.getElementById('splashScreen').classList.add('hidden');
   document.getElementById('weatherContent').classList.remove('hidden');
+
+  // ── Carte
+  updateMap(lat, lon);
 }
 
 // ── Scanner les 18 prochaines heures pour trouver la 1ère fenêtre diurne favorable
@@ -1098,6 +1164,7 @@ document.addEventListener('click', (e) => {
 //  INIT
 // ══════════════════════════════════════════════════════════
 (function init() {
+  initMap();
   renderDroneSelector();
   // Charger la dernière position sauvegardée
   const last = localStorage.getItem('dw_last');
