@@ -170,99 +170,122 @@ function calcVisibilityScore(vis) {
   return Math.max(0, s);
 }
 
+function calcCapeScore(cape) {
+  let s = 100;
+  if (cape > 1500)     s -= 70;
+  else if (cape > 800) s -= 45;
+  else if (cape > 300) s -= 20;
+  return Math.max(0, s);
+}
+
+function calcTempScore(t) {
+  let s = 100;
+  if (t < -5)      s -= 40;
+  else if (t < 5)  s -= 20;
+  else if (t < 10) s -= 10;
+  else if (t > 38) s -= 15;
+  return Math.max(0, s);
+}
+
 // ══════════════════════════════════════════════════════════
 //  SCORE DE VOL — retourne { score, breakdown, reasons }
 // ══════════════════════════════════════════════════════════
 function calcFlightScore(params, droneProfile) {
   const profile = droneProfile || currentDroneProfile;
-  let score = 100;
   const reasons = [];
 
-  // ── Breakdown (4 sous-scores indépendants)
-  const breakdown = {
-    wind:       calcWindScore(params.wind10, params.wind80, profile),
-    gusts:      calcGustsScore(params.gusts, profile),
-    rain:       calcRainScore(params.precip, params.precipProb),
-    visibility: calcVisibilityScore(params.visibility),
-  };
+  // ── 6 sous-scores de base
+  const windS  = calcWindScore(params.wind10, params.wind80, profile);
+  const gustsS = calcGustsScore(params.gusts, profile);
+  const rainS  = calcRainScore(params.precip, params.precipProb);
+  const visS   = calcVisibilityScore(params.visibility);
+  const capeS  = calcCapeScore(params.cape);
+  const tempS  = calcTempScore(params.temp);
 
-  // ── Vent (score global influencé par le profil)
-  const w = params.wind10;
-  const max = profile.maxWind;
-  if (w >= max * 1.15)      { score -= 40; reasons.push({ type:'danger',  text: `<strong>Vent dangereux au sol :</strong> ${w.toFixed(1)} m/s — Au-delà des limites du ${profile.name} (${max} m/s)` }); }
-  else if (w >= max)        { score -= 30; reasons.push({ type:'danger',  text: `<strong>Vent critique au sol :</strong> ${w.toFixed(1)} m/s — Limite maximale ${profile.name}` }); }
-  else if (w >= max * 0.75) { score -= 18; reasons.push({ type:'warning', text: `<strong>Vent fort au sol :</strong> ${w.toFixed(1)} m/s — Vol difficile, haute vigilance` }); }
-  else if (w >= max * 0.5)  { score -= 8;  reasons.push({ type:'warning', text: `<strong>Vent modéré au sol :</strong> ${w.toFixed(1)} m/s — Vol possible avec précaution` }); }
-  else                      {               reasons.push({ type:'ok',      text: `<strong>Vent au sol acceptable :</strong> ${w.toFixed(1)} m/s` }); }
+  // ── Score global = moyenne pondérée des 6 facteurs
+  let score = Math.round(
+    windS  * 0.30 +
+    gustsS * 0.20 +
+    rainS  * 0.20 +
+    visS   * 0.15 +
+    capeS  * 0.10 +
+    tempS  * 0.05
+  );
 
-  // Vent à 80m + cisaillement
-  const w80 = params.wind80;
-  if (w80 >= max * 1.1)       { score -= 15; reasons.push({ type:'danger',  text: `<strong>Vent à 80m dangereux :</strong> ${w80.toFixed(1)} m/s` }); }
-  else if (w80 >= max * 0.85) { score -= 8;  reasons.push({ type:'warning', text: `<strong>Vent à 80m élevé :</strong> ${w80.toFixed(1)} m/s — Limiter l'altitude` }); }
-  const shear = Math.abs(w80 - w);
-  if (shear > 5) { score -= 10; reasons.push({ type:'warning', text: `<strong>Cisaillement de vent :</strong> ${shear.toFixed(1)} m/s entre sol et 80m — Turbulences possibles` }); }
+  // ── Breakdown complet (chips conditionnels ajoutés ci-dessous)
+  const breakdown = { wind: windS, gusts: gustsS, rain: rainS, visibility: visS, cape: capeS, temp: tempS };
 
-  // ── Rafales
-  const g = params.gusts;
-  const maxG = profile.maxGusts;
-  if (g >= maxG * 1.1)      { score -= 20; reasons.push({ type:'danger',  text: `<strong>Rafales extrêmes :</strong> ${g.toFixed(1)} m/s — Vol interdit` }); }
-  else if (g >= maxG)       { score -= 14; reasons.push({ type:'danger',  text: `<strong>Rafales à la limite :</strong> ${g.toFixed(1)} m/s — Limite max ${profile.name}` }); }
-  else if (g >= maxG * 0.8) { score -= 8;  reasons.push({ type:'warning', text: `<strong>Rafales fortes :</strong> ${g.toFixed(1)} m/s — Risque de déstabilisation` }); }
-
-  // ── Précipitations
-  const p = params.precip;
-  const pp = params.precipProb;
-  if (p > 2)          { score -= 40; reasons.push({ type:'danger',  text: `<strong>Précipitations actives :</strong> ${p.toFixed(1)} mm — Vol interdit` }); }
-  else if (p > 0)     { score -= 25; reasons.push({ type:'danger',  text: `<strong>Précipitations faibles :</strong> ${p.toFixed(1)} mm — Vol fortement déconseillé` }); }
-  else if (pp >= 60)  { score -= 15; reasons.push({ type:'warning', text: `<strong>Probabilité de pluie élevée :</strong> ${pp}% — Risque significatif` }); }
-  else if (pp >= 30)  { score -= 6;  reasons.push({ type:'warning', text: `<strong>Probabilité de pluie :</strong> ${pp}% — Rester vigilant` }); }
-  else                {               reasons.push({ type:'ok',      text: `<strong>Pas de précipitations</strong> prévues` }); }
-
-  // ── Visibilité
-  const vis = params.visibility;
-  if (vis < 1)      { score -= 35; reasons.push({ type:'danger',  text: `<strong>Visibilité très faible :</strong> ${vis.toFixed(1)} km — Vol VLOS impossible` }); }
-  else if (vis < 3) { score -= 20; reasons.push({ type:'danger',  text: `<strong>Visibilité réduite :</strong> ${vis.toFixed(1)} km — Conditions VLOS dégradées` }); }
-  else if (vis < 5) { score -= 8;  reasons.push({ type:'warning', text: `<strong>Visibilité limitée :</strong> ${vis.toFixed(1)} km — Vigilance recommandée` }); }
-  else              {               reasons.push({ type:'ok',      text: `<strong>Bonne visibilité :</strong> ${vis.toFixed(1)} km` }); }
-
-  // ── Nuages
-  if (params.cloudCover >= 90) { score -= 5; reasons.push({ type:'warning', text: `<strong>Couverture nuageuse totale :</strong> ${params.cloudCover}%` }); }
-
-  // ── CAPE
-  const cape = params.cape;
-  if (cape > 1500)    { score -= 35; reasons.push({ type:'danger',  text: `<strong>Risque orage extrême (CAPE : ${Math.round(cape)} J/kg)</strong> — Vol dangereux` }); }
-  else if (cape > 800){ score -= 20; reasons.push({ type:'danger',  text: `<strong>Risque orage élevé (CAPE : ${Math.round(cape)} J/kg)</strong> — Vol fortement déconseillé` }); }
-  else if (cape > 300){ score -= 10; reasons.push({ type:'warning', text: `<strong>Instabilité atmosphérique (CAPE : ${Math.round(cape)} J/kg)</strong> — Orages possibles` }); }
-  else                {               reasons.push({ type:'ok',      text: `<strong>Atmosphère stable</strong> — Aucun risque d'orage` }); }
-
-  // ── Température
-  const t = params.temp;
-  if (t < -5)       { score -= 20; reasons.push({ type:'danger',  text: `<strong>Température hors limites :</strong> ${t.toFixed(1)}°C — Batterie défaillante possible` }); }
-  else if (t < 5)   { score -= 10; reasons.push({ type:'warning', text: `<strong>Température froide :</strong> ${t.toFixed(1)}°C — Capacité batterie réduite (~30%)` }); }
-  else if (t < 10)  { score -= 5;  reasons.push({ type:'warning', text: `<strong>Température fraîche :</strong> ${t.toFixed(1)}°C — Légère réduction de batterie` }); }
-  else if (t > 38)  { score -= 8;  reasons.push({ type:'warning', text: `<strong>Température élevée :</strong> ${t.toFixed(1)}°C — Risque de surchauffe` }); }
-  else              {               reasons.push({ type:'ok',      text: `<strong>Température optimale :</strong> ${t.toFixed(1)}°C` }); }
-
-  // ── Nuit
+  // ── Nuit — cap dur
   if (!params.isDaytime) {
-    score -= 50;
+    breakdown.night = 0;
+    score = Math.min(score, 15);
     reasons.push({ type:'danger', text: `<strong>Vol de nuit :</strong> Interdit par la CAAI sans autorisation spéciale` });
   }
 
-  // ── UTM obligatoire (CAAI, règlement 10916 — nov. 2023)
+  // ── Airspace — cap dur selon statut
+  if (params.airspace) {
+    const as = params.airspace;
+    if (as.status === 'danger') {
+      breakdown.airspace = 0;
+      score = Math.min(score, 10);
+      reasons.push({ type:'danger', text: `<strong>Zone interdite :</strong> ${as.airport} à ${as.dist.toFixed(1)} km — Autorisation CAAI obligatoire` });
+    } else if (as.status === 'warning') {
+      breakdown.airspace = 30;
+      score = Math.min(score, 40);
+      reasons.push({ type:'danger', text: `<strong>CTR active :</strong> ${as.airport} à ${as.dist.toFixed(1)} km — Autorisation requise` });
+    } else if (as.status === 'caution') {
+      breakdown.airspace = 75;
+      reasons.push({ type:'warning', text: `<strong>Proximité aéroport :</strong> ${as.airport} à ${as.dist.toFixed(1)} km` });
+    }
+  }
+
+  // ── Reasons (texte détaillé pour le panneau recommandations)
+  const w = params.wind10, max = profile.maxWind;
+  if (windS < 40)       reasons.push({ type:'danger',  text: `<strong>Vent dangereux au sol :</strong> ${w.toFixed(1)} m/s — Au-delà des limites du ${profile.name} (${max} m/s)` });
+  else if (windS < 70)  reasons.push({ type:'warning', text: `<strong>Vent fort au sol :</strong> ${w.toFixed(1)} m/s — Vol difficile, haute vigilance` });
+  else if (windS < 92)  reasons.push({ type:'warning', text: `<strong>Vent modéré au sol :</strong> ${w.toFixed(1)} m/s — Vol possible avec précaution` });
+  else                  reasons.push({ type:'ok',      text: `<strong>Vent au sol acceptable :</strong> ${w.toFixed(1)} m/s` });
+
+  const w80 = params.wind80, shear = Math.abs(w80 - w);
+  if (w80 >= max * 1.1)       reasons.push({ type:'danger',  text: `<strong>Vent à 80m dangereux :</strong> ${w80.toFixed(1)} m/s` });
+  else if (w80 >= max * 0.85) reasons.push({ type:'warning', text: `<strong>Vent à 80m élevé :</strong> ${w80.toFixed(1)} m/s — Limiter l'altitude` });
+  if (shear > 5)              reasons.push({ type:'warning', text: `<strong>Cisaillement de vent :</strong> ${shear.toFixed(1)} m/s entre sol et 80m — Turbulences possibles` });
+
+  const g = params.gusts, maxG = profile.maxGusts;
+  if (gustsS < 45)      reasons.push({ type:'danger',  text: `<strong>Rafales extrêmes :</strong> ${g.toFixed(1)} m/s — Vol interdit` });
+  else if (gustsS < 82) reasons.push({ type:'warning', text: `<strong>Rafales fortes :</strong> ${g.toFixed(1)} m/s — Risque de déstabilisation` });
+
+  const p = params.precip, pp = params.precipProb;
+  if (rainS < 30)       reasons.push({ type:'danger',  text: `<strong>Précipitations actives :</strong> ${p.toFixed(1)} mm — Vol interdit` });
+  else if (rainS < 60)  reasons.push({ type:'danger',  text: `<strong>Précipitations faibles :</strong> ${p.toFixed(1)} mm — Vol fortement déconseillé` });
+  else if (rainS < 88)  reasons.push({ type:'warning', text: `<strong>Probabilité de pluie :</strong> ${pp}% — Rester vigilant` });
+  else                  reasons.push({ type:'ok',      text: `<strong>Pas de précipitations</strong> prévues` });
+
+  const vis = params.visibility;
+  if (visS < 35)        reasons.push({ type:'danger',  text: `<strong>Visibilité très faible :</strong> ${vis.toFixed(1)} km — Vol VLOS impossible` });
+  else if (visS < 65)   reasons.push({ type:'danger',  text: `<strong>Visibilité réduite :</strong> ${vis.toFixed(1)} km — Conditions VLOS dégradées` });
+  else if (visS < 90)   reasons.push({ type:'warning', text: `<strong>Visibilité limitée :</strong> ${vis.toFixed(1)} km — Vigilance recommandée` });
+  else                  reasons.push({ type:'ok',      text: `<strong>Bonne visibilité :</strong> ${vis.toFixed(1)} km` });
+
+  if (params.cloudCover >= 90) reasons.push({ type:'warning', text: `<strong>Couverture nuageuse totale :</strong> ${params.cloudCover}%` });
+
+  const cape = params.cape;
+  if (capeS < 35)       reasons.push({ type:'danger',  text: `<strong>Risque orage extrême (CAPE : ${Math.round(cape)} J/kg)</strong> — Vol dangereux` });
+  else if (capeS < 60)  reasons.push({ type:'danger',  text: `<strong>Risque orage élevé (CAPE : ${Math.round(cape)} J/kg)</strong> — Vol fortement déconseillé` });
+  else if (capeS < 85)  reasons.push({ type:'warning', text: `<strong>Instabilité atmosphérique (CAPE : ${Math.round(cape)} J/kg)</strong> — Orages possibles` });
+  else                  reasons.push({ type:'ok',      text: `<strong>Atmosphère stable</strong> — Aucun risque d'orage` });
+
+  const t = params.temp;
+  if (tempS < 65)       reasons.push({ type:'danger',  text: `<strong>Température hors limites :</strong> ${t.toFixed(1)}°C — Batterie défaillante possible` });
+  else if (tempS < 82)  reasons.push({ type:'warning', text: `<strong>Température froide/chaude :</strong> ${t.toFixed(1)}°C — Capacité batterie réduite` });
+  else if (tempS < 92)  reasons.push({ type:'warning', text: `<strong>Température fraîche :</strong> ${t.toFixed(1)}°C — Légère réduction de batterie` });
+  else                  reasons.push({ type:'ok',      text: `<strong>Température optimale :</strong> ${t.toFixed(1)}°C` });
+
   if (profile.weight > 250) {
     reasons.push({ type:'info', text: `<strong>UTM obligatoire (CAAI nov. 2023) :</strong> Le ${profile.name} (${profile.weight}g) doit être connecté à un système UTM actif. Sans connexion UTM, le vol est illégal en Israël.` });
   }
 
-  // ── Airspace
-  if (params.airspace) {
-    const as = params.airspace;
-    if (as.status === 'danger')  { score -= 50; reasons.push({ type:'danger',  text: `<strong>Zone interdite :</strong> ${as.airport} à ${as.dist.toFixed(1)} km — Autorisation CAAI obligatoire` }); }
-    if (as.status === 'warning') { score -= 25; reasons.push({ type:'danger',  text: `<strong>CTR active :</strong> ${as.airport} à ${as.dist.toFixed(1)} km — Autorisation requise` }); }
-    if (as.status === 'caution') { score -= 5;  reasons.push({ type:'warning', text: `<strong>Proximité aéroport :</strong> ${as.airport} à ${as.dist.toFixed(1)} km` }); }
-  }
-
-  return { score: Math.round(Math.max(0, Math.min(100, score))), breakdown, reasons };
+  return { score: Math.max(0, Math.min(100, score)), breakdown, reasons };
 }
 
 // ── Verdict
@@ -576,19 +599,50 @@ function renderApp(data, locationName, lat, lon) {
 function renderBreakdownChips(breakdown) {
   const container = document.getElementById('scoreBreakdown');
   if (!container) return;
+
+  // Chips toujours visibles
   const chips = [
-    { key: 'wind',       label: '💨 Vent',        value: breakdown.wind },
-    { key: 'gusts',      label: '💥 Rafales',      value: breakdown.gusts },
-    { key: 'rain',       label: '🌧 Pluie',        value: breakdown.rain },
-    { key: 'visibility', label: '👁 Visibilité',   value: breakdown.visibility },
+    { key: 'wind',       label: '💨 Vent',       value: breakdown.wind },
+    { key: 'gusts',      label: '💥 Rafales',     value: breakdown.gusts },
+    { key: 'rain',       label: '🌧 Pluie',       value: breakdown.rain },
+    { key: 'visibility', label: '👁 Visibilité',  value: breakdown.visibility },
   ];
-  container.innerHTML = chips.map(c => {
+
+  // Chips conditionnels
+  if (breakdown.cape  < 100) chips.push({ key: 'cape',  label: '⚡ CAPE',     value: breakdown.cape });
+  if (breakdown.temp  < 100) chips.push({ key: 'temp',  label: '🌡 Temp.',    value: breakdown.temp });
+  if ('night'    in breakdown) chips.push({ key: 'night',    label: '🌙 Nuit',      value: breakdown.night });
+  if ('airspace' in breakdown) chips.push({ key: 'airspace', label: '✈️ Zone',      value: breakdown.airspace });
+
+  // Facteur limitant (sous-score le plus bas)
+  const limiting = chips.reduce((a, b) => a.value <= b.value ? a : b);
+  const limitingDesc = {
+    wind:       'Vent sol trop fort',
+    gusts:      'Rafales importantes',
+    rain:       'Précipitations',
+    visibility: 'Visibilité réduite',
+    cape:       'Instabilité atmosphérique',
+    temp:       'Température défavorable',
+    night:      'Vol de nuit interdit',
+    airspace:   'Zone aérienne restreinte',
+  };
+
+  const chipsHtml = chips.map(c => {
     const cls = scoreClass(c.value);
     return `<div class="breakdown-chip breakdown-${cls}">
       <span class="chip-label">${c.label}</span>
       <span class="chip-score">${c.value}</span>
     </div>`;
   }).join('');
+
+  const limitingHtml = limiting.value < 100
+    ? `<div class="limiting-factor">
+        Facteur limitant : <strong>${limiting.label} — ${limitingDesc[limiting.key]}</strong>
+        <span class="limiting-score">(${limiting.value}/100)</span>
+       </div>`
+    : '';
+
+  container.innerHTML = chipsHtml + limitingHtml;
 }
 
 function renderAltitudeProfile({ wind10, wind80, wind120, wind180 }, profile) {
