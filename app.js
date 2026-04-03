@@ -178,6 +178,15 @@ function calcCapeScore(cape) {
   return Math.max(0, s);
 }
 
+function calcKpScore(kp) {
+  if (kp < 2) return 100;
+  if (kp < 3) return 85;
+  if (kp < 4) return 65;
+  if (kp < 5) return 35;
+  if (kp < 6) return 10;
+  return 0;
+}
+
 function calcTempScore(t) {
   let s = 100;
   if (t < -5)      s -= 40;
@@ -207,26 +216,28 @@ function calcFlightScore(params, droneProfile) {
   const profile = droneProfile || currentDroneProfile;
   const reasons = [];
 
-  // ── 6 sous-scores de base
+  // ── 7 sous-scores de base
   const windS  = calcWindScore(params.wind10, params.wind80, profile);
   const gustsS = calcGustsScore(params.gusts, profile);
   const rainS  = calcRainScore(params.precip, params.precipProb);
   const visS   = calcVisibilityScore(params.visibility);
   const capeS  = calcCapeScore(params.cape);
   const tempS  = calcTempScore(params.temp);
+  const kpS    = calcKpScore(params.kp ?? 0);
 
-  // ── Score global = moyenne pondérée des 6 facteurs
+  // ── Score global = moyenne pondérée des 7 facteurs
   let score = Math.round(
-    windS  * 0.30 +
-    gustsS * 0.20 +
+    windS  * 0.27 +
+    gustsS * 0.18 +
     rainS  * 0.20 +
     visS   * 0.15 +
     capeS  * 0.10 +
-    tempS  * 0.05
+    tempS  * 0.05 +
+    kpS    * 0.05
   );
 
   // ── Breakdown complet (chips conditionnels ajoutés ci-dessous)
-  const breakdown = { wind: windS, gusts: gustsS, rain: rainS, visibility: visS, cape: capeS, temp: tempS };
+  const breakdown = { wind: windS, gusts: gustsS, rain: rainS, visibility: visS, cape: capeS, temp: tempS, kp: kpS };
 
   // ── Nuit — cap dur
   if (!params.isDaytime) {
@@ -294,6 +305,13 @@ function calcFlightScore(params, droneProfile) {
   else if (tempS < 92)  reasons.push({ type:'warning', text: `<strong>Température fraîche :</strong> ${t.toFixed(1)}°C — Légère réduction de batterie` });
   else                  reasons.push({ type:'ok',      text: `<strong>Température optimale :</strong> ${t.toFixed(1)}°C` });
 
+  // ── Kp (activité géomagnétique)
+  const kp = params.kp ?? 0;
+  if (kp >= 6)      { score -= 35; reasons.push({ type:'danger',  text: `<strong>Tempête géomagnétique majeure (Kp : ${kp.toFixed(1)})</strong> — Compas et GPS fortement perturbés. Vol interdit.` }); }
+  else if (kp >= 5) { score -= 20; reasons.push({ type:'danger',  text: `<strong>Tempête géomagnétique (Kp : ${kp.toFixed(1)})</strong> — Perturbations GPS possibles. Vol déconseillé.` }); }
+  else if (kp >= 4) { score -= 10; reasons.push({ type:'warning', text: `<strong>Activité géomagnétique élevée (Kp : ${kp.toFixed(1)})</strong> — Vérifier calibration compas avant décollage.` }); }
+  else if (kp >= 3) {              reasons.push({ type:'warning', text: `<strong>Légère activité magnétique (Kp : ${kp.toFixed(1)})</strong> — Surveiller le compas en vol.` }); }
+
   if (profile.weight > 250) {
     reasons.push({ type:'info', text: `<strong>UTM obligatoire (CAAI nov. 2023) :</strong> Le ${profile.name} (${profile.weight}g) doit être connecté à un système UTM actif. Sans connexion UTM, le vol est illégal en Israël.` });
   }
@@ -334,6 +352,18 @@ async function geocode(query) {
   const resp = await fetch(url, { headers: { 'Accept-Language': 'fr' } });
   if (!resp.ok) throw new Error('Erreur géocodage');
   return resp.json();
+}
+
+// Indice Kp (activité géomagnétique) — NOAA, sans clé
+async function fetchKpIndex() {
+  try {
+    const resp = await fetch('https://services.swpc.noaa.gov/json/planetary_k_index_1m.json');
+    if (!resp.ok) return 0;
+    const data = await resp.json();
+    return data[data.length - 1].kp_index ?? 0;
+  } catch {
+    return 0;
+  }
 }
 
 // Météo : Open-Meteo — modèle ICON (DWD, Allemagne) plus précis pour Israël/Méditerranée
@@ -440,6 +470,7 @@ function updateMap(lat, lon) {
 let currentTab = 'flight';
 let currentWeatherData = null;
 let currentLat = null, currentLon = null;
+let currentKp = 0;
 
 function findClosestHourIndex(times) {
   const now = new Date();
@@ -525,7 +556,8 @@ function renderApp(data, locationName, lat, lon) {
   // Score
   const { score, breakdown, reasons } = calcFlightScore({
     wind10, wind80, wind120, gusts, temp, precip, precipProb: precipP,
-    visibility: visForScore, cloudCover: cc, cape, isDaytime: isDay, airspace
+    visibility: visForScore, cloudCover: cc, cape, isDaytime: isDay, airspace,
+    kp: currentKp
   }, currentDroneProfile);
   const verdict = getVerdict(score);
 
@@ -634,6 +666,22 @@ function renderApp(data, locationName, lat, lon) {
   document.getElementById('capeLevel').textContent = capeLabel;
   setBar('capeBar', Math.min(100, (cape / 2000) * 100), cape > 1500 ? 'var(--red)' : cape > 800 ? 'var(--orange)' : cape > 300 ? '#FF9F0A' : 'var(--green)');
   setCardStatus('card-cape', cape > 800 ? 'danger' : cape > 300 ? 'warning' : 'good');
+
+  // ── Indice Kp
+  const kpEl = document.getElementById('kpValue');
+  if (kpEl) {
+    kpEl.textContent = currentKp.toFixed(1);
+    const kpLabel = currentKp < 2 ? '✅ Calme — GPS optimal'
+      : currentKp < 3 ? '✅ Légère activité'
+      : currentKp < 4 ? '⚠️ Modérée — Surveiller le compas'
+      : currentKp < 5 ? '⚠️ Perturbations — Limiter la portée'
+      : currentKp < 6 ? '⛔ Tempête mineure — Vol déconseillé'
+      : '⛔ Tempête majeure — Vol interdit';
+    document.getElementById('kpLevel').textContent = kpLabel;
+    const kpBarColor = currentKp >= 4 ? 'var(--red)' : currentKp >= 3 ? 'var(--orange)' : 'var(--green)';
+    setBar('kpBar', Math.min(100, (currentKp / 9) * 100), kpBarColor);
+    setCardStatus('card-kp', currentKp >= 4 ? 'danger' : currentKp >= 3 ? 'warning' : 'good');
+  }
 
   // ── Humidité
   document.getElementById('humidity').textContent = humid;
@@ -784,8 +832,9 @@ function renderBreakdownChips(breakdown) {
   ];
 
   // Chips conditionnels
-  if (breakdown.cape  < 100) chips.push({ key: 'cape',  label: '⚡ CAPE',  value: breakdown.cape });
-  if (breakdown.temp  < 100) chips.push({ key: 'temp',  label: '🌡 Temp.', value: breakdown.temp });
+  if (breakdown.cape < 100) chips.push({ key: 'cape', label: '⚡ CAPE',  value: breakdown.cape });
+  if (breakdown.temp < 100) chips.push({ key: 'temp', label: '🌡 Temp.', value: breakdown.temp });
+  if (breakdown.kp   < 100) chips.push({ key: 'kp',   label: '🧲 Kp',    value: breakdown.kp   });
   if ('night'    in breakdown) chips.push({ key: 'night',    label: '🌙 Nuit', value: 0, forceClass: 'breakdown-bad' });
   // Airspace: couleur forcée selon statut (pas via scoreClass)
   if ('airspace' in breakdown) {
@@ -803,6 +852,7 @@ function renderBreakdownChips(breakdown) {
     visibility: 'Visibilité réduite',
     cape:       'Instabilité atmosphérique',
     temp:       'Température défavorable',
+    kp:         'Activité géomagnétique',
     night:      'Vol de nuit interdit',
     airspace:   'Zone aérienne restreinte',
   };
@@ -1020,7 +1070,8 @@ function showError(msg) {
 async function loadWeatherForLocation(lat, lon, name) {
   showLoading(true);
   try {
-    const data = await fetchWeather(lat, lon);
+    const [data, kp] = await Promise.all([fetchWeather(lat, lon), fetchKpIndex()]);
+    currentKp = kp;
     const locName = name || await reverseGeocode(lat, lon);
     renderApp(data, locName, lat, lon);
     // Sauvegarder la position
