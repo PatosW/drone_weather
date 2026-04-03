@@ -794,87 +794,127 @@ function renderAltitudeProfile({ wind10, wind80, wind120, wind180 }, profile) {
 
 function renderForecast(data, tab) {
   currentTab = tab;
-  const h = data.hourly;
-  const d = data.daily;
+  const h      = data.hourly;
+  const d      = data.daily;
+  const nowMs  = Date.now();
+  const nowIdx = findClosestHourIndex(h.time);
   const container = document.getElementById('forecastContainer');
 
-  // Grouper par jour
+  // ── Grouper par jour en filtrant les heures passées et la nuit profonde
   const days = {};
   for (let i = 0; i < h.time.length; i++) {
-    const dt = new Date(h.time[i]);
-    const dayKey = dt.toISOString().slice(0, 10);
+    const t    = new Date(h.time[i]);
+    const tMs  = t.getTime();
+    const hour = t.getHours();
+
+    if (tMs < nowMs - 30 * 60000 && i !== nowIdx) continue; // passé (> 30 min)
+    if (hour < 5  && i !== nowIdx) continue;                 // nuit profonde 00h-04h
+    if (hour > 22) continue;                                  // fin de soirée 23h
+
+    const dayKey = t.toISOString().slice(0, 10);
     if (!days[dayKey]) days[dayKey] = [];
-    // Prendre toutes les heures (0-23)
     days[dayKey].push(i);
+  }
+
+  // Helper : extraire les params météo d'un index hourly
+  function paramsAt(i) {
+    return {
+      wind10:     h.windspeed_10m[i]             || 0,
+      wind80:     h.windspeed_80m[i]             || 0,
+      wind120:    h.windspeed_120m[i]            || 0,
+      gusts:      h.windgusts_10m[i]             || 0,
+      temp:       h.temperature_2m[i]            || 20,
+      precip:     h.precipitation[i]             || 0,
+      precipProb: h.precipitation_probability[i] || 0,
+      visibility: (h.visibility[i] || 10000) / 1000,
+      cloudCover: h.cloudcover[i]                || 0,
+      cape:       h.cape[i]                      || 0,
+    };
   }
 
   let html = '<div class="forecast-inner">';
   let dayIdx = 0;
 
   for (const [dayKey, indices] of Object.entries(days)) {
-    const dayDate = new Date(dayKey + 'T12:00:00');
-    const today = new Date(); today.setHours(0,0,0,0);
-    const dayLabel = dayDate.toDateString() === today.toDateString() ? "Aujourd'hui"
-      : dayDate.toDateString() === new Date(today.getTime() + 86400000).toDateString() ? 'Demain'
-      : formatDateShort(dayKey);
+    if (!indices.length) { dayIdx++; continue; }
 
-    html += `<div class="forecast-day-group">
-      <div class="forecast-day-label">${dayLabel}</div>
+    const sunrise = d.sunrise[dayIdx] || d.sunrise[0];
+    const sunset  = d.sunset[dayIdx]  || d.sunset[0];
+
+    // ── Label jour
+    const dayDate = new Date(dayKey + 'T12:00:00');
+    const today   = new Date(); today.setHours(0, 0, 0, 0);
+    const diff    = dayDate.getTime() - today.getTime();
+    const dayLabel = diff === 0 ? "Aujourd'hui"
+      : diff === 86400000 ? 'Demain'
+      : dayDate.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'short' });
+
+    // ── Top 3 meilleurs créneaux diurnes (score météo >= 75) pour le highlight
+    const daytimeScores = indices
+      .filter(i => isDaytime(h.time[i], sunrise, sunset))
+      .map(i => ({ i, ms: calcMeteoScore(paramsAt(i)) }))
+      .filter(x => x.ms >= 75)
+      .sort((a, b) => b.ms - a.ms)
+      .slice(0, 3);
+    const bestSet = new Set(daytimeScores.map(x => x.i));
+
+    const borderStyle = dayIdx > 0 ? 'border-left:2px solid rgba(60,60,67,.1);padding-left:8px;margin-left:4px;' : '';
+
+    html += `<div class="forecast-day-group" style="${borderStyle}">
+      <div class="forecast-day-label" style="font-size:13px;font-weight:700;color:var(--text-primary);letter-spacing:-.2px;padding:0 4px 10px;text-transform:none;">${dayLabel}</div>
       <div class="forecast-hours">`;
 
     for (const i of indices) {
-      const dt = new Date(h.time[i]);
-      const sunrise = d.sunrise[dayIdx] || d.sunrise[0];
-      const sunset  = d.sunset[dayIdx]  || d.sunset[0];
-      const isDay   = isDaytime(h.time[i], sunrise, sunset);
+      const dt     = new Date(h.time[i]);
+      const hour   = dt.getHours();
+      const isDay  = isDaytime(h.time[i], sunrise, sunset);
+      const isBest = isDay && bestSet.has(i);
+      const p      = paramsAt(i);
 
-      let cellScore = 0, mainVal = '', sub = '';
+      let cellScore = 0, mainVal = '';
 
       if (tab === 'flight') {
-        const { score } = calcFlightScore({
-          wind10:     h.windspeed_10m[i]  || 0,
-          wind80:     h.windspeed_80m[i]  || 0,
-          wind120:    h.windspeed_120m[i] || 0,
-          gusts:      h.windgusts_10m[i]  || 0,
-          temp:       h.temperature_2m[i] || 20,
-          precip:     h.precipitation[i] || 0,
-          precipProb: h.precipitation_probability[i] || 0,
-          visibility: (h.visibility[i] || 10000) / 1000,
-          cloudCover: h.cloudcover[i]    || 0,
-          cape:       h.cape[i]          || 0,
-          isDaytime:  isDay,
-          airspace:   null
-        }, currentDroneProfile);
-        cellScore = score;
-        mainVal = `<div class="fc-score ${scoreClass(score)}">${score}</div>`;
-        sub = '';
+        if (!isDay) {
+          // Score météo pur la nuit — pas de pénalité légale, montre les conditions
+          const ms = calcMeteoScore(p);
+          cellScore = ms;
+          mainVal = `<div class="fc-score" style="color:rgba(255,255,255,.55);font-size:14px;font-weight:700">${ms}</div>
+                     <div style="position:absolute;top:3px;right:4px;font-size:9px;opacity:.5">🌙</div>`;
+        } else {
+          const { score } = calcFlightScore({ ...p, isDaytime: true, airspace: null }, currentDroneProfile);
+          cellScore = score;
+          mainVal = `<div class="fc-score ${scoreClass(score)}">${score}</div>`;
+        }
       } else if (tab === 'wind') {
-        const w = (h.windspeed_10m[i] || 0).toFixed(1);
-        const wv = h.windspeed_10m[i] || 0;
-        const wColor = wv > currentDroneProfile.maxWind ? 'var(--red)' : wv > currentDroneProfile.maxWind * 0.75 ? 'var(--orange)' : 'var(--green)';
-        mainVal = `<div class="fc-wind" style="font-size:13px;font-weight:700;color:${wColor}">${w}</div><div class="fc-wind">m/s</div>`;
-        cellScore = 100 - Math.min(100, (h.windspeed_10m[i] / 15) * 100);
+        const wv = p.wind10;
+        const wColor = wv > currentDroneProfile.maxWind ? 'var(--red)'
+          : wv > currentDroneProfile.maxWind * 0.75 ? 'var(--orange)' : 'var(--green)';
+        mainVal = `<div class="fc-wind" style="font-size:13px;font-weight:700;color:${wColor}">${wv.toFixed(1)}</div><div class="fc-wind">m/s</div>`;
+        cellScore = 100 - Math.min(100, (wv / 15) * 100);
       } else {
-        const pp = h.precipitation_probability[i] || 0;
+        const pp = p.precipProb;
         const pColor = pp > 60 ? 'var(--red)' : pp > 30 ? 'var(--orange)' : 'var(--green)';
         mainVal = `<div class="fc-wind" style="font-size:13px;font-weight:700;color:${pColor}">${pp}%</div>`;
         cellScore = 100 - pp;
       }
 
       const wmo = WMO_CODES[h.weathercode[i]] || WMO_CODES[0];
-      const cls = [
-        'forecast-cell',
-        !isDay ? 'night' : '',
-        tab === 'flight' && cellScore >= 75 ? 'optimal' : '',
-        `score-${scoreClass(cellScore)}`
-      ].filter(Boolean).join(' ');
+
+      // Best-slot: border verte inline (pas de nouvelle classe CSS)
+      const bestStyle = isBest
+        ? 'box-shadow:inset 0 0 0 1.5px rgba(52,199,89,.45);background:rgba(52,199,89,.07);'
+        : '';
+
+      const cls = ['forecast-cell', !isDay ? 'night' : '', `score-${scoreClass(cellScore)}`]
+        .filter(Boolean).join(' ');
 
       html += `
-        <div class="${cls}">
-          <div class="fc-time">${dt.getHours().toString().padStart(2,'0')}h</div>
+        <div class="${cls}" style="${bestStyle}">
+          <div class="fc-time">${hour.toString().padStart(2, '0')}h</div>
           <div class="fc-icon">${wmo.emoji}</div>
           ${mainVal}
-          <div class="fc-wind">${(h.windspeed_10m[i]||0).toFixed(1)}</div>
+          <div class="fc-wind">${p.wind10.toFixed(1)}</div>
+          ${isBest ? '<div style="font-size:9px;text-align:center;margin-top:2px">⭐</div>' : ''}
         </div>`;
     }
 
